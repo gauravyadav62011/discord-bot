@@ -3,244 +3,119 @@ import requests
 import asyncio
 import os
 import re
-from datetime import datetime, timezone
-from PIL import Image, ImageDraw, ImageFont
-from io import BytesIO
+import json
+from datetime import datetime
 
+# ================= CONFIG =================
 TOKEN = os.getenv("TOKEN")
-
-tracked_accounts = {}
-user_cache = {}
+DATA_FILE = "data.json"
 
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-# ---------------- TIME FORMAT ----------------
-def format_time(seconds):
-    seconds = int(seconds)
-
-    if seconds < 1:
-        return "1s"
-    elif seconds < 60:
-        return f"{seconds}s"
-    elif seconds < 3600:
-        return f"{seconds//60}m {seconds%60}s"
-    else:
-        return f"{seconds//3600}h {(seconds%3600)//60}m"
-
-# ---------------- USERNAME ----------------
-def extract_username(text):
-    text = text.strip()
-    match = re.search(r"instagram\.com/([A-Za-z0-9._]+)", text)
-    if match:
-        return match.group(1)
-    return text.replace("@", "")
-
-# ---------------- INSTAGRAM CHECK ----------------
-def check_instagram(username):
-
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "x-ig-app-id": "936619743392459"
-    }
-
-    # TRY API
-    for _ in range(2):
-        try:
-            r = requests.get(
-                f"https://i.instagram.com/api/v1/users/web_profile_info/?username={username}",
-                headers=headers,
-                timeout=10
-            )
-
-            if r.status_code == 200:
-                data = r.json()
-                if data.get("data") and data["data"]["user"]:
-                    user = data["data"]["user"]
-                    return "ACTIVE", user["edge_followed_by"]["count"], user["profile_pic_url_hd"]
-        except:
-            continue
-
-    # WEBSITE CHECK
+# ================= STORAGE =================
+def load_data():
     try:
-        r = requests.get(f"https://www.instagram.com/{username}/", headers=headers, timeout=10)
-        html = r.text.lower()
-
-        if "sorry, this page isn't available" in html:
-            return "BANNED", None, None
-
-        if "followers" in html:
-            return "ACTIVE", None, None
-
+        with open(DATA_FILE, "r") as f:
+            return json.load(f)
     except:
-        pass
+        return {}
 
-    return "UNKNOWN", None, None
+def save_data(data):
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f, indent=4)
 
-# ---------------- CARD ----------------
-def generate_card(username, followers, time_text, pic_url, status):
+tracked_accounts = load_data()
 
-    base = os.path.dirname(os.path.abspath(__file__))
+# ================= HELPERS =================
+def extract_username(text):
+    match = re.search(r"(?:instagram\.com/)?@?([a-zA-Z0-9._]+)", text)
+    return match.group(1) if match else None
 
-    font_title = ImageFont.truetype(os.path.join(base, "Poppins-Bold.ttf"), 42)
-    font_stats = ImageFont.truetype(os.path.join(base, "Poppins-Regular.ttf"), 28)
-    font_small = ImageFont.truetype(os.path.join(base, "Poppins-Regular.ttf"), 26)
+def get_instagram_data(username):
+    try:
+        url = f"https://www.instagram.com/{username}/?__a=1&__d=dis"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = requests.get(url, headers=headers, timeout=10)
 
-    W, H = 1000, 340
-    img = Image.new("RGB", (W, H), (24, 24, 28))
-    draw = ImageDraw.Draw(img)
+        if r.status_code != 200:
+            return None
 
-    # COLORS
-    if status == "ACTIVE":
-        color = (0, 180, 255)
-        label = "ACTIVE"
-    elif status == "MONITORING":
-        color = (255, 170, 0)
-        label = "MONITORING"
-    else:
-        color = (0, 220, 120)
-        label = "RECOVERED"
+        data = r.json()
+        user = data["graphql"]["user"]
 
-    # AVATAR
-    av_size = 150
-    av_x, av_y = 40, (H - av_size) // 2
+        return {
+            "username": user["username"],
+            "followers": user["edge_followed_by"]["count"],
+            "profile_pic": user["profile_pic_url_hd"]
+        }
+    except:
+        return None
 
-    draw.ellipse((av_x, av_y, av_x+av_size, av_y+av_size), fill=(60,60,70))
-
-    if pic_url:
-        try:
-            r = requests.get(pic_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
-            pfp = Image.open(BytesIO(r.content)).convert("RGBA").resize((av_size, av_size))
-
-            mask = Image.new("L", (av_size, av_size), 0)
-            ImageDraw.Draw(mask).ellipse((0,0,av_size,av_size), fill=255)
-
-            img.paste(pfp, (av_x, av_y), mask)
-        except:
-            pass
-
-    # TEXT
-    tx = av_x + av_size + 40
-
-    draw.text((tx, 40), username, fill=(255,255,255), font=font_title)
-
-    followers = followers if followers else 0
-    draw.text((tx, 110), f"{followers:,} followers", fill=(200,200,200), font=font_stats)
-
-    # STATUS
-    draw.rectangle((tx, 150, tx+220, 190), fill=color)
-    draw.text((tx+20, 155), label, fill=(0,0,0), font=font_small)
-
-    # 🔥 TIME FIXED (BIG + CLEAR)
-    draw.text((tx, 210), f"Time Taken: {time_text}", fill=(255,255,255), font=font_small)
-
-    draw.text((tx, 250), f"instagram.com/{username}", fill=(140,140,160), font=font_small)
-
-    path = "card.png"
-    img.save(path)
-    return path
-
-# ---------------- MONITOR ----------------
-async def monitor():
-    await client.wait_until_ready()
-
-    while True:
-        for username in list(tracked_accounts):
-
-            status, followers, pic = check_instagram(username)
-
-            if status == "ACTIVE":
-                data = tracked_accounts[username]
-
-                diff = datetime.now(timezone.utc) - data["time"]
-                time_text = format_time(diff.total_seconds())
-
-                if followers is None and username in user_cache:
-                    followers = user_cache[username]["followers"]
-                    pic = user_cache[username]["pic"]
-
-                card = generate_card(username, followers, time_text, pic, "RECOVERED")
-
-                await data["channel"].send(
-                    content=f"🔥 ACCOUNT RECOVERED | @{username}",
-                    file=discord.File(card)
-                )
-
-                del tracked_accounts[username]
-
-        await asyncio.sleep(60)
-
-# ---------------- EVENTS ----------------
-@client.event
-async def on_ready():
-    print(f"Bot running as {client.user}")
-    client.loop.create_task(monitor())
-
+# ================= COMMAND =================
 @client.event
 async def on_message(message):
-
     if message.author == client.user:
         return
 
-    text = message.content.strip()
-
-    if not text.startswith("!"):
+    username = extract_username(message.content)
+    if not username:
         return
 
-    inputs = text[1:].split()
+    data = get_instagram_data(username)
 
-    for raw in inputs:
+    if not data:
+        await message.channel.send(f"⚠️ Could not verify @{username}, monitoring started...")
+        
+        tracked_accounts[username] = {
+            "status": "monitoring",
+            "added_at": str(datetime.now())
+        }
+        save_data(tracked_accounts)
+        return
 
-        username = extract_username(raw)
-        if not username:
-            continue
+    embed = discord.Embed(
+        title="ACCOUNT ACTIVE",
+        description=f"@{data['username']}",
+        color=0x00ffcc
+    )
 
-        start = datetime.now(timezone.utc)
+    embed.add_field(name="Followers", value=data["followers"], inline=False)
+    embed.set_thumbnail(url=data["profile_pic"])
 
-        status, followers, pic = check_instagram(username)
+    await message.channel.send(embed=embed)
 
-        print(f"[DEBUG] {username} → {status}")
+    tracked_accounts[username] = {
+        "status": "active",
+        "followers": data["followers"],
+        "last_checked": str(datetime.now())
+    }
+    save_data(tracked_accounts)
 
-        # ACTIVE
-        if status == "ACTIVE":
+# ================= MONITOR LOOP =================
+async def monitor_accounts():
+    await client.wait_until_ready()
 
-            if followers and pic:
-                user_cache[username] = {
-                    "followers": followers,
-                    "pic": pic
-                }
+    while not client.is_closed():
+        for username in list(tracked_accounts.keys()):
+            data = get_instagram_data(username)
 
-            if followers is None and username in user_cache:
-                followers = user_cache[username]["followers"]
-                pic = user_cache[username]["pic"]
+            if data:
+                tracked_accounts[username]["status"] = "active"
+                tracked_accounts[username]["followers"] = data["followers"]
+                tracked_accounts[username]["last_checked"] = str(datetime.now())
+            else:
+                tracked_accounts[username]["status"] = "monitoring"
 
-            if username in tracked_accounts:
-                del tracked_accounts[username]
+        save_data(tracked_accounts)
+        await asyncio.sleep(60)  # check every 60 seconds
 
-            elapsed = format_time((datetime.now(timezone.utc) - start).total_seconds())
+# ================= START =================
+@client.event
+async def on_ready():
+    print(f"Bot running as {client.user}")
 
-            card = generate_card(username, followers, elapsed, pic, "ACTIVE")
-
-            await message.channel.send(
-                content=f"✅ ACCOUNT ACTIVE | @{username}",
-                file=discord.File(card)
-            )
-
-        # MONITORING (BANNED + UNKNOWN)
-        else:
-
-            if username not in tracked_accounts:
-                tracked_accounts[username] = {
-                    "channel": message.channel,
-                    "time": datetime.now(timezone.utc)
-                }
-
-                card = generate_card(username, 0, "Scanning...", None, "MONITORING")
-
-                await message.channel.send(
-                    content=f"🛰️ MONITORING STARTED | @{username}",
-                    file=discord.File(card)
-                )
+client.loop.create_task(monitor_accounts())
 
 client.run(TOKEN)
