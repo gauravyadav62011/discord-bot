@@ -5,6 +5,8 @@ import os
 import re
 import json
 from datetime import datetime
+from io import BytesIO
+from PIL import Image, ImageDraw, ImageFont
 
 # ================= CONFIG =================
 TOKEN = os.getenv("TOKEN")
@@ -56,6 +58,45 @@ def get_instagram_data(username):
     except:
         return None
 
+# ================= TILE UI =================
+def create_card(username, followers, status):
+    width, height = 800, 250
+    img = Image.new("RGB", (width, height), (15, 15, 25))
+    draw = ImageDraw.Draw(img)
+
+    try:
+        title_font = ImageFont.truetype("Poppins-Bold.ttf", 42)
+        text_font = ImageFont.truetype("Poppins-Regular.ttf", 26)
+    except:
+        title_font = ImageFont.load_default()
+        text_font = ImageFont.load_default()
+
+    # Username
+    draw.text((180, 50), username, font=title_font, fill=(255, 255, 255))
+
+    # Followers
+    draw.text((180, 110), f"{followers} followers", font=text_font, fill=(180, 180, 180))
+
+    # Status
+    status_color = (0, 200, 255) if status == "ACTIVE" else (255, 180, 0)
+    draw.rectangle((180, 150, 340, 190), fill=status_color)
+    draw.text((190, 155), status, font=text_font, fill=(0, 0, 0))
+
+    # Avatar placeholder
+    draw.ellipse((30, 50, 130, 150), fill=(60, 60, 80))
+
+    return img
+
+async def send_card(channel, username, followers, status):
+    card = create_card(username, followers, status)
+
+    buffer = BytesIO()
+    card.save(buffer, format="PNG")
+    buffer.seek(0)
+
+    file = discord.File(buffer, filename="card.png")
+    await channel.send(file=file)
+
 # ================= MONITOR =================
 async def monitor_accounts():
     await client.wait_until_ready()
@@ -98,7 +139,7 @@ async def on_message(message):
     data = get_instagram_data(username)
 
     if not data:
-        await message.channel.send(f"🛰️ MONITORING STARTED | @{username}")
+        await send_card(message.channel, username, 0, "MONITORING")
 
         tracked_accounts[username] = {
             "status": "monitoring",
@@ -107,16 +148,7 @@ async def on_message(message):
         save_data(tracked_accounts)
         return
 
-    embed = discord.Embed(
-        title="ACCOUNT ACTIVE",
-        description=f"@{data['username']}",
-        color=0x00ffcc
-    )
-
-    embed.add_field(name="Followers", value=data["followers"], inline=False)
-    embed.set_thumbnail(url=data["profile_pic"])
-
-    await message.channel.send(embed=embed)
+    await send_card(message.channel, data["username"], data["followers"], "ACTIVE")
 
     tracked_accounts[username] = {
         "status": "active",
