@@ -13,7 +13,7 @@ TOKEN = os.getenv("TOKEN")
 DATA_FILE = "data.json"
 
 if not TOKEN:
-    print("❌ TOKEN NOT FOUND")
+    print("TOKEN missing")
     exit()
 
 intents = discord.Intents.default()
@@ -31,9 +31,9 @@ def save_data(data):
     with open(DATA_FILE, "w") as f:
         json.dump(data, f, indent=4)
 
-tracked_accounts = load_data()
+tracked = load_data()
 
-# ================= USERNAME PARSER =================
+# ================= USERNAME =================
 def extract_username(text):
     match = re.search(r"(?:instagram\.com/)?@?([a-zA-Z0-9._]+)", text)
     return match.group(1).lower() if match else None
@@ -42,11 +42,17 @@ def extract_username(text):
 def check_account(username):
     try:
         url = f"https://www.instagram.com/{username}/"
-        headers = {"User-Agent": "Mozilla/5.0"}
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Accept": "text/html",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
 
         r = requests.get(url, headers=headers, timeout=10)
 
-        if r.status_code == 404:
+        # 🔥 REAL DETECTION
+        if "Sorry, this page isn't available" in r.text:
             return {"status": "banned"}
 
         if r.status_code == 200:
@@ -68,31 +74,30 @@ def check_account(username):
 
         return {"status": "error"}
 
-    except:
+    except Exception as e:
+        print("ERROR:", e)
         return {"status": "error"}
 
-# ================= TILE UI =================
+# ================= TILE =================
 def create_card(username, followers, status, profile_pic=None):
-    width, height = 800, 250
-    img = Image.new("RGB", (width, height), (10, 10, 20))
+    img = Image.new("RGB", (800, 250), (10, 10, 20))
     draw = ImageDraw.Draw(img)
 
     try:
-        title_font = ImageFont.truetype("Poppins-Bold.ttf", 44)
-        text_font = ImageFont.truetype("Poppins-Regular.ttf", 26)
+        title = ImageFont.truetype("Poppins-Bold.ttf", 44)
+        text = ImageFont.truetype("Poppins-Regular.ttf", 26)
     except:
-        title_font = ImageFont.load_default()
-        text_font = ImageFont.load_default()
+        title = ImageFont.load_default()
+        text = ImageFont.load_default()
 
-    # Profile Pic
+    # profile pic
     try:
         if profile_pic:
-            response = requests.get(profile_pic, timeout=5)
-            pfp = Image.open(BytesIO(response.content)).resize((110, 110)).convert("RGB")
+            p = requests.get(profile_pic, timeout=5)
+            pfp = Image.open(BytesIO(p.content)).resize((110, 110)).convert("RGB")
 
             mask = Image.new("L", (110, 110), 0)
-            mask_draw = ImageDraw.Draw(mask)
-            mask_draw.ellipse((0, 0, 110, 110), fill=255)
+            ImageDraw.Draw(mask).ellipse((0, 0, 110, 110), fill=255)
 
             img.paste(pfp, (30, 70), mask)
         else:
@@ -100,99 +105,89 @@ def create_card(username, followers, status, profile_pic=None):
     except:
         draw.ellipse((30, 70, 140, 180), fill=(60, 60, 80))
 
-    # Username
-    draw.text((180, 60), username, font=title_font, fill=(255, 255, 255))
+    # username
+    draw.text((180, 60), username, font=title, fill=(255, 255, 255))
 
-    # Followers
-    followers_text = f"{followers} followers" if followers else "Followers: --"
-    draw.text((180, 120), followers_text, font=text_font, fill=(180, 180, 180))
+    # followers
+    f_text = f"{followers} followers" if followers else "Followers: --"
+    draw.text((180, 120), f_text, font=text, fill=(180, 180, 180))
 
-    # Status badge
-    if status == "ACTIVE":
-        color = (0, 200, 255)
-    else:
-        color = (255, 180, 0)
-
+    # status
+    color = (0, 200, 255) if status == "ACTIVE" else (255, 180, 0)
     draw.rectangle((180, 160, 340, 200), fill=color)
-    draw.text((190, 165), status, font=text_font, fill=(0, 0, 0))
+    draw.text((190, 165), status, font=text, fill=(0, 0, 0))
 
     return img
 
-async def send_card(channel, username, followers, status, profile_pic=None):
+async def send_card(channel, username, followers, status, profile_pic):
     img = create_card(username, followers, status, profile_pic)
 
-    buffer = BytesIO()
-    img.save(buffer, format="PNG")
-    buffer.seek(0)
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
 
-    file = discord.File(buffer, filename="card.png")
-    await channel.send(file=file)
+    await channel.send(file=discord.File(buf, "card.png"))
 
-# ================= MONITOR LOOP =================
-async def monitor_accounts():
+# ================= MONITOR =================
+async def monitor():
     await client.wait_until_ready()
 
-    while not client.is_closed():
-        for username in tracked_accounts:
-            result = check_account(username)
+    while True:
+        for u in tracked:
+            res = check_account(u)
 
-            tracked_accounts[username]["status"] = result["status"]
-            tracked_accounts[username]["last_checked"] = str(datetime.now())
+            tracked[u]["status"] = res["status"]
+            tracked[u]["last_check"] = str(datetime.now())
 
-        save_data(tracked_accounts)
+        save_data(tracked)
         await asyncio.sleep(60)
 
 # ================= CLIENT =================
 class Bot(discord.Client):
     async def setup_hook(self):
-        self.loop.create_task(monitor_accounts())
+        self.loop.create_task(monitor())
 
 client = Bot(intents=intents)
 
 # ================= EVENTS =================
 @client.event
 async def on_ready():
-    print(f"✅ Bot running as {client.user}")
+    print("BOT READY")
 
 @client.event
-async def on_message(message):
-    if message.author == client.user:
+async def on_message(msg):
+    if msg.author == client.user:
         return
 
-    username = extract_username(message.content)
+    username = extract_username(msg.content)
     if not username:
         return
 
-    # prevent duplicate spam
-    if username in tracked_accounts:
-        await message.channel.send(f"⚠️ Already tracking @{username}")
+    # prevent spam
+    if username in tracked:
+        await msg.channel.send(f"Already tracking @{username}")
         return
 
-    result = check_account(username)
+    res = check_account(username)
 
-    if result["status"] == "active":
-        await send_card(
-            message.channel,
-            username,
-            result.get("followers"),
-            "ACTIVE",
-            result.get("profile_pic")
-        )
+    # 🔥 FIXED LOGIC
+    if res["status"] == "banned":
+        status = "MONITORING"
+        followers = None
+        pic = None
     else:
-        await send_card(
-            message.channel,
-            username,
-            None,
-            "MONITORING",
-            None
-        )
+        status = "ACTIVE"
+        followers = res.get("followers")
+        pic = res.get("profile_pic")
 
-    tracked_accounts[username] = {
-        "status": result["status"],
-        "added_at": str(datetime.now())
+    await send_card(msg.channel, username, followers, status, pic)
+
+    tracked[username] = {
+        "status": res["status"],
+        "added": str(datetime.now())
     }
 
-    save_data(tracked_accounts)
+    save_data(tracked)
 
 # ================= START =================
 client.run(TOKEN)
