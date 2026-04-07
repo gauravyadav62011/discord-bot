@@ -40,26 +40,32 @@ def extract_username(text):
 
 def get_instagram_data(username):
     try:
-        url = f"https://www.instagram.com/{username}/?__a=1&__d=dis"
+        url = f"https://www.instagram.com/{username}/"
         headers = {"User-Agent": "Mozilla/5.0"}
         r = requests.get(url, headers=headers, timeout=10)
 
         if r.status_code != 200:
             return None
 
-        data = r.json()
-        user = data["graphql"]["user"]
+        html = r.text
+
+        followers_match = re.search(r'"edge_followed_by":{"count":(\d+)}', html)
+        followers = int(followers_match.group(1)) if followers_match else 0
+
+        pic_match = re.search(r'"profile_pic_url_hd":"([^"]+)"', html)
+        profile_pic = pic_match.group(1).replace("\\u0026", "&") if pic_match else None
 
         return {
-            "username": user["username"],
-            "followers": user["edge_followed_by"]["count"],
-            "profile_pic": user["profile_pic_url_hd"]
+            "username": username,
+            "followers": followers,
+            "profile_pic": profile_pic
         }
+
     except:
         return None
 
 # ================= TILE UI =================
-def create_card(username, followers, status):
+def create_card(username, followers, status, profile_pic_url=None):
     width, height = 800, 250
     img = Image.new("RGB", (width, height), (15, 15, 25))
     draw = ImageDraw.Draw(img)
@@ -70,6 +76,22 @@ def create_card(username, followers, status):
     except:
         title_font = ImageFont.load_default()
         text_font = ImageFont.load_default()
+
+    # Profile Pic
+    try:
+        if profile_pic_url:
+            response = requests.get(profile_pic_url, timeout=5)
+            pfp = Image.open(BytesIO(response.content)).resize((100, 100)).convert("RGB")
+
+            mask = Image.new("L", (100, 100), 0)
+            draw_mask = ImageDraw.Draw(mask)
+            draw_mask.ellipse((0, 0, 100, 100), fill=255)
+
+            img.paste(pfp, (30, 50), mask)
+        else:
+            draw.ellipse((30, 50, 130, 150), fill=(60, 60, 80))
+    except:
+        draw.ellipse((30, 50, 130, 150), fill=(60, 60, 80))
 
     # Username
     draw.text((180, 50), username, font=title_font, fill=(255, 255, 255))
@@ -82,13 +104,10 @@ def create_card(username, followers, status):
     draw.rectangle((180, 150, 340, 190), fill=status_color)
     draw.text((190, 155), status, font=text_font, fill=(0, 0, 0))
 
-    # Avatar placeholder
-    draw.ellipse((30, 50, 130, 150), fill=(60, 60, 80))
-
     return img
 
-async def send_card(channel, username, followers, status):
-    card = create_card(username, followers, status)
+async def send_card(channel, username, followers, status, profile_pic_url=None):
+    card = create_card(username, followers, status, profile_pic_url)
 
     buffer = BytesIO()
     card.save(buffer, format="PNG")
@@ -139,7 +158,7 @@ async def on_message(message):
     data = get_instagram_data(username)
 
     if not data:
-        await send_card(message.channel, username, 0, "MONITORING")
+        await send_card(message.channel, username, 0, "MONITORING", None)
 
         tracked_accounts[username] = {
             "status": "monitoring",
@@ -148,7 +167,7 @@ async def on_message(message):
         save_data(tracked_accounts)
         return
 
-    await send_card(message.channel, data["username"], data["followers"], "ACTIVE")
+    await send_card(message.channel, data["username"], data["followers"], "ACTIVE", data["profile_pic"])
 
     tracked_accounts[username] = {
         "status": "active",
