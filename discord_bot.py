@@ -10,9 +10,12 @@ from datetime import datetime
 TOKEN = os.getenv("TOKEN")
 DATA_FILE = "data.json"
 
+if not TOKEN:
+    print("ERROR: TOKEN NOT FOUND")
+    exit()
+
 intents = discord.Intents.default()
 intents.message_content = True
-client = discord.Client(intents=intents)
 
 # ================= STORAGE =================
 def load_data():
@@ -53,7 +56,36 @@ def get_instagram_data(username):
     except:
         return None
 
-# ================= COMMAND =================
+# ================= MONITOR =================
+async def monitor_accounts():
+    await client.wait_until_ready()
+
+    while not client.is_closed():
+        for username in list(tracked_accounts.keys()):
+            data = get_instagram_data(username)
+
+            if data:
+                tracked_accounts[username]["status"] = "active"
+                tracked_accounts[username]["followers"] = data["followers"]
+                tracked_accounts[username]["last_checked"] = str(datetime.now())
+            else:
+                tracked_accounts[username]["status"] = "monitoring"
+
+        save_data(tracked_accounts)
+        await asyncio.sleep(60)
+
+# ================= CLIENT =================
+class MyClient(discord.Client):
+    async def setup_hook(self):
+        self.loop.create_task(monitor_accounts())
+
+client = MyClient(intents=intents)
+
+# ================= EVENTS =================
+@client.event
+async def on_ready():
+    print(f"Bot running as {client.user}")
+
 @client.event
 async def on_message(message):
     if message.author == client.user:
@@ -66,8 +98,8 @@ async def on_message(message):
     data = get_instagram_data(username)
 
     if not data:
-        await message.channel.send(f"⚠️ Could not verify @{username}, monitoring started...")
-        
+        await message.channel.send(f"🛰️ MONITORING STARTED | @{username}")
+
         tracked_accounts[username] = {
             "status": "monitoring",
             "added_at": str(datetime.now())
@@ -93,29 +125,5 @@ async def on_message(message):
     }
     save_data(tracked_accounts)
 
-# ================= MONITOR LOOP =================
-async def monitor_accounts():
-    await client.wait_until_ready()
-
-    while not client.is_closed():
-        for username in list(tracked_accounts.keys()):
-            data = get_instagram_data(username)
-
-            if data:
-                tracked_accounts[username]["status"] = "active"
-                tracked_accounts[username]["followers"] = data["followers"]
-                tracked_accounts[username]["last_checked"] = str(datetime.now())
-            else:
-                tracked_accounts[username]["status"] = "monitoring"
-
-        save_data(tracked_accounts)
-        await asyncio.sleep(60)  # check every 60 seconds
-
 # ================= START =================
-@client.event
-async def on_ready():
-    print(f"Bot running as {client.user}")
-
-client.loop.create_task(monitor_accounts())
-
 client.run(TOKEN)
