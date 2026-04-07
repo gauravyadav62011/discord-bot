@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from PIL import Image, ImageDraw, ImageFont
 from io import BytesIO
 
-TOKEN = "MTQ3OTg2ODQwODM4MzI3OTIwOA.GqeSw5.jTv-HenBvyJOi-8_CwFc5qBhW5FxnlkwTsbyuQ"
+TOKEN = os.getenv("TOKEN")
 
 tracked_accounts = {}
 user_cache = {}
