@@ -45,25 +45,24 @@ def check_account(username):
 
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-            "Accept": "text/html",
             "Accept-Language": "en-US,en;q=0.9",
         }
 
         r = requests.get(url, headers=headers, timeout=10)
 
-        # 🔥 REAL DETECTION
+        # banned detection
         if "Sorry, this page isn't available" in r.text:
             return {"status": "banned"}
 
         if r.status_code == 200:
             html = r.text
 
-            # followers (optional)
-            followers_match = re.search(r'"edge_followed_by":{"count":(\d+)}', html)
+            # followers
+            followers_match = re.search(r'"count":(\d+),"edge_followed_by"', html)
             followers = int(followers_match.group(1)) if followers_match else None
 
-            # profile pic (optional)
-            pic_match = re.search(r'"profile_pic_url_hd":"([^"]+)"', html)
+            # profile pic
+            pic_match = re.search(r'"profile_pic_url":"([^"]+)"', html)
             profile_pic = pic_match.group(1).replace("\\u0026", "&") if pic_match else None
 
             return {
@@ -74,13 +73,12 @@ def check_account(username):
 
         return {"status": "error"}
 
-    except Exception as e:
-        print("ERROR:", e)
+    except:
         return {"status": "error"}
 
-# ================= TILE =================
-def create_card(username, followers, status, profile_pic=None):
-    img = Image.new("RGB", (800, 250), (10, 10, 20))
+# ================= CARD =================
+def create_card(username, followers, status, profile_pic=None, time_taken=None):
+    img = Image.new("RGB", (820, 260), (12, 12, 22))
     draw = ImageDraw.Draw(img)
 
     try:
@@ -106,21 +104,25 @@ def create_card(username, followers, status, profile_pic=None):
         draw.ellipse((30, 70, 140, 180), fill=(60, 60, 80))
 
     # username
-    draw.text((180, 60), username, font=title, fill=(255, 255, 255))
+    draw.text((180, 50), username, font=title, fill=(255, 255, 255))
 
     # followers
     f_text = f"{followers} followers" if followers else "Followers: --"
-    draw.text((180, 120), f_text, font=text, fill=(180, 180, 180))
+    draw.text((180, 110), f_text, font=text, fill=(180, 180, 180))
+
+    # time
+    if time_taken is not None:
+        draw.text((180, 150), f"Time: {time_taken}s", font=text, fill=(120, 120, 120))
 
     # status
     color = (0, 200, 255) if status == "ACTIVE" else (255, 180, 0)
-    draw.rectangle((180, 160, 340, 200), fill=color)
-    draw.text((190, 165), status, font=text, fill=(0, 0, 0))
+    draw.rectangle((180, 190, 340, 230), fill=color)
+    draw.text((190, 195), status, font=text, fill=(0, 0, 0))
 
     return img
 
-async def send_card(channel, username, followers, status, profile_pic):
-    img = create_card(username, followers, status, profile_pic)
+async def send_card(channel, username, followers, status, profile_pic, time_taken):
+    img = create_card(username, followers, status, profile_pic, time_taken)
 
     buf = BytesIO()
     img.save(buf, format="PNG")
@@ -163,14 +165,16 @@ async def on_message(msg):
     if not username:
         return
 
-    # prevent spam
     if username in tracked:
         await msg.channel.send(f"Already tracking @{username}")
         return
 
+    start = datetime.now()
     res = check_account(username)
+    end = datetime.now()
 
-    # 🔥 FIXED LOGIC
+    time_taken = round((end - start).total_seconds(), 2)
+
     if res["status"] == "banned":
         status = "MONITORING"
         followers = None
@@ -180,7 +184,7 @@ async def on_message(msg):
         followers = res.get("followers")
         pic = res.get("profile_pic")
 
-    await send_card(msg.channel, username, followers, status, pic)
+    await send_card(msg.channel, username, followers, status, pic, time_taken)
 
     tracked[username] = {
         "status": res["status"],
